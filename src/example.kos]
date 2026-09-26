@@ -1,0 +1,88 @@
+import std.io
+
+struct Stats {
+    valid: u64,
+    review: u64,
+    corrupt: u64,
+    total: f64,
+}
+
+enum Row {
+    Valid(id: u64, amount: f64, vendor: []u8),
+    Incomplete(reason: []u8),
+    Corrupt,
+}
+
+func parse_row(line: []u8) Row {
+    let parts = line.split(',')
+
+    if parts.len != 3 {
+        return .Corrupt
+    }
+
+    let id =
+        u64.parse(parts[0])
+        or return .Incomplete("invalid id")
+
+    let amount =
+        f64.parse(parts[1])
+        or return .Incomplete("invalid amount")
+
+    if amount < 0 {
+        return .Incomplete("negative amount")
+    }
+
+    return .Valid(id, amount, parts[2])
+}
+
+func ingest(path: []u8) !Stats {
+    let file = try io.open(path)
+    defer file.close()
+
+    let reader = io.BufferedReader.init(file)
+
+    let mut stats = Stats {
+        valid: 0,
+        review: 0,
+        corrupt: 0,
+        total: 0.0,
+    }
+
+    while try reader.read_line() as line {
+        let row = line |> parse_row
+
+        match row {
+            .Valid(_, amount, _) => {
+                stats.valid += 1
+                stats.total += amount
+            },
+
+            .Incomplete(reason) => {
+                stats.review += 1
+                io.eprint("review: {}\n", reason)
+            },
+
+            .Corrupt => {
+                stats.corrupt += 1
+            },
+        }
+    }
+
+    return stats
+}
+
+func main(args: [][]u8) !void {
+    if args.len < 2 {
+        return error.Usage
+    }
+
+    let stats = try ingest(args[1])
+
+    io.print(
+        "valid={} review={} corrupt={} total={}\n",
+        stats.valid,
+        stats.review,
+        stats.corrupt,
+        stats.total,
+    )
+}
