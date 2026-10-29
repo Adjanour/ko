@@ -156,7 +156,7 @@ pub const Tokenizer = struct {
     pub fn init(buffer: [:0]const u8) Tokenizer {
         return .{ .buffer = buffer, .index = if (std.mem.startsWith(u8, buffer, "\xEF\xBB\xBF")) 3 else 0 };
     }
-    const State = enum { start, identifier, number_literal, invalid, char_literal, string_literal, int_period, int_exponent, float, float_exponent, equal, bang, ampersand, pipe, minus, plus, asterisk, slash };
+    const State = enum { start, identifier, number_literal, invalid, char_literal, string_literal, int_period, int_exponent, float, float_exponent, equal, bang, ampersand, pipe, minus, plus, asterisk, slash, angle_bracket_left, angle_bracket_right };
     pub fn next(self: *Tokenizer) Token {
         var result: Token = .{ .start = self.index, .end = undefined, .tag = undefined };
         state: switch (State.start) {
@@ -189,36 +189,19 @@ pub const Tokenizer = struct {
                     result.tag = .number_literal;
                     continue :state .number_literal;
                 },
-                '=' => {
-                    result.tag = .equal;
-                    continue :state .equal;
-                },
-                '!' => {
-                    result.tag = .bang;
-                    continue :state .bang;
-                },
+                '=' => continue :state .equal,
+                '!' => continue :state .bang,
                 '&' => continue :state .ampersand,
-                '-' => {
-                    result.tag = .minus;
-                    continue :state .minus;
-                },
+                '-' => continue :state .minus,
                 '|' => continue :state .pipe,
-                '+' => {
-                    result.tag = .plus;
-                    continue :state .plus;
-                },
-                '*' => {
-                    result.tag = .asterisk;
-                    continue :state .asterisk;
-                },
-                '/' => {
-                    result.tag = .slash;
-                    continue :state .slash;
-                },
+                '+' => continue :state .plus,
+                '*' => continue :state .asterisk,
+                '/' => continue :state .slash,
+                '<' => continue :state .angle_bracket_left,
+                '>' => continue :state .angle_bracket_right,
                 '%' => {
-                    std.debug.print("{d} kirk", .{self.index});
-                    self.index += 1;
                     result.tag = .percent;
+                    self.index += 1;
                 },
                 else => continue :state .invalid,
             },
@@ -344,9 +327,14 @@ pub const Tokenizer = struct {
                 }
             },
             .ampersand => {
+                // we already know the first '&' belongs to this token.
+                // consume the second byte only when it forms '&&'.
                 self.index += 1;
                 switch (self.buffer[self.index]) {
-                    '&' => result.tag = .ampersand_ampersand,
+                    '&' => {
+                        result.tag = .ampersand_ampersand;
+                        self.index += 1;
+                    },
                     else => {
                         result.tag = .invalid;
                         continue :state .invalid;
@@ -354,57 +342,116 @@ pub const Tokenizer = struct {
                 }
             },
             .pipe => {
+                // the first '|' belongs to this token
+                // consume the next byte only when it forms '||' or '|>'.
                 self.index += 1;
                 switch (self.buffer[self.index]) {
-                    '|' => result.tag = .pipe_pipe,
-                    '>' => result.tag = .pipe_angle_bracket_right,
-                    else => {
-                        result.tag = .invalid;
-                        continue :state .invalid;
+                    '|' => {
+                        result.tag = .pipe_pipe;
+                        self.index += 1;
                     },
+                    '>' => {
+                        result.tag = .pipe_angle_bracket_right;
+                        self.index += 1;
+                    },
+                    else => result.tag = .pipe,
                 }
             },
             .equal => {
+                // consume the known '=' first. if the next byte forms '==' or
+                // '=>', consume it too; otherwise leave it for the next token.
                 self.index += 1;
                 switch (self.buffer[self.index]) {
-                    '=' => result.tag = .equal_equal,
-                    else => {},
+                    '=' => {
+                        result.tag = .equal_equal;
+                        self.index += 1;
+                    },
+                    '>' => {
+                        result.tag = .equal_angle_bracket_right;
+                        self.index += 1;
+                    },
+                    else => result.tag = .equal,
                 }
             },
             .bang => {
+                // consume the known '!'. consume the next byte only for '!='.
                 self.index += 1;
                 switch (self.buffer[self.index]) {
-                    '=' => result.tag = .bang_equal,
-                    else => {},
+                    '=' => {
+                        result.tag = .bang_equal;
+                        self.index += 1;
+                    },
+                    else => result.tag = .bang,
                 }
             },
             .minus => {
+                // consume the known '-'. consume the next byte only for '-='
+                // or '->'; otherwise return the single '-' token.
                 self.index += 1;
                 switch (self.buffer[self.index]) {
-                    '=' => result.tag = .minus_equal,
-                    '>' => result.tag = .minus_angle_bracket_right,
-                    else => {},
+                    '=' => {
+                        result.tag = .minus_equal;
+                        self.index += 1;
+                    },
+                    '>' => {
+                        result.tag = .minus_angle_bracket_right;
+                        self.index += 1;
+                    },
+                    else => result.tag = .minus,
                 }
             },
             .plus => {
+                // consume the known '+'. consume the next byte only for '+=';
+                // otherwise return the single '+' token.
                 self.index += 1;
                 switch (self.buffer[self.index]) {
-                    '=' => result.tag = .plus_equal,
-                    else => {},
+                    '=' => {
+                        result.tag = .plus_equal;
+                        self.index += 1;
+                    },
+                    else => result.tag = .plus,
                 }
             },
             .asterisk => {
+                // consume the known '*'. consume the next byte only for '*='.
                 self.index += 1;
                 switch (self.buffer[self.index]) {
-                    '=' => result.tag = .asterisk_equal,
-                    else => {},
+                    '=' => {
+                        result.tag = .asterisk_equal;
+                        self.index += 1;
+                    },
+                    else => result.tag = .asterisk,
                 }
             },
             .slash => {
+                // consume the known '/'. consume the next byte only for '/='.
                 self.index += 1;
                 switch (self.buffer[self.index]) {
-                    '=' => result.tag = .slash_equal,
-                    else => {},
+                    '=' => {
+                        result.tag = .slash_equal;
+                        self.index += 1;
+                    },
+                    else => result.tag = .slash,
+                }
+            },
+            .angle_bracket_left => {
+                self.index += 1;
+                switch (self.buffer[self.index]) {
+                    '=' => {
+                        result.tag = .angle_bracket_left_equal;
+                        self.index += 1;
+                    },
+                    else => result.tag = .angle_bracket_left,
+                }
+            },
+            .angle_bracket_right => {
+                self.index += 1;
+                switch (self.buffer[self.index]) {
+                    '=' => {
+                        result.tag = .angle_bracket_right_equal;
+                        self.index += 1;
+                    },
+                    else => result.tag = .angle_bracket_right,
                 }
             },
         }
@@ -423,7 +470,7 @@ test "lexer: keywords" {
 }
 
 test "lexer: operators" {
-    var tok = Tokenizer.init("+ - * / % = == != < <= > -> |> && || ! | += *= -=");
+    var tok = Tokenizer.init("+ - * / % = == != < <= > -> => |> && || ! | *= += -=");
     try std.testing.expectEqual(Token.Tag.plus, tok.next().tag);
     try std.testing.expectEqual(Token.Tag.minus, tok.next().tag);
     try std.testing.expectEqual(Token.Tag.asterisk, tok.next().tag);
