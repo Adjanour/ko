@@ -86,6 +86,7 @@ pub const Token = struct {
         minus_equal, // -=
         asterisk_equal, // *=
         slash_equal, // /=
+        minus_angle_bracket_right, // ->
 
         pipe_angle_bracket_right, // |>
 
@@ -155,7 +156,7 @@ pub const Tokenizer = struct {
     pub fn init(buffer: [:0]const u8) Tokenizer {
         return .{ .buffer = buffer, .index = if (std.mem.startsWith(u8, buffer, "\xEF\xBB\xBF")) 3 else 0 };
     }
-    const State = enum { start, identifier, number_literal, invalid, char_literal, string_literal };
+    const State = enum { start, identifier, number_literal, invalid, char_literal, string_literal, int_period, int_exponent, float, float_exponent, equal, bang, ampersand, pipe, minus, plus, asterisk, slash };
     pub fn next(self: *Tokenizer) Token {
         var result: Token = .{ .start = self.index, .end = undefined, .tag = undefined };
         state: switch (State.start) {
@@ -188,14 +189,37 @@ pub const Tokenizer = struct {
                     result.tag = .number_literal;
                     continue :state .number_literal;
                 },
-                '|' => {
+                '=' => {
+                    result.tag = .equal;
+                    continue :state .equal;
+                },
+                '!' => {
+                    result.tag = .bang;
+                    continue :state .bang;
+                },
+                '&' => continue :state .ampersand,
+                '-' => {
+                    result.tag = .minus;
+                    continue :state .minus;
+                },
+                '|' => continue :state .pipe,
+                '+' => {
+                    result.tag = .plus;
+                    continue :state .plus;
+                },
+                '*' => {
+                    result.tag = .asterisk;
+                    continue :state .asterisk;
+                },
+                '/' => {
+                    result.tag = .slash;
+                    continue :state .slash;
+                },
+                '%' => {
+                    std.debug.print("{d} kirk", .{self.index});
                     self.index += 1;
-                    switch (self.buffer[self.index]) {
-                        '|' => result.tag = .pipe_pipe,
-                        '>' => result.tag = .pipe_angle_bracket_right,
-                        else => con
-                
-                }
+                    result.tag = .percent;
+                },
                 else => continue :state .invalid,
             },
 
@@ -217,7 +241,7 @@ pub const Tokenizer = struct {
             .identifier => {
                 self.index += 1;
                 switch (self.buffer[self.index]) {
-                    'a'...'Z', 'A'...'Z', '_', '0'...'9' => continue :state .identifier,
+                    'a'...'z', 'A'...'Z', '_', '0'...'9' => continue :state .identifier,
                     else => {
                         const ident = self.buffer[result.start..self.index];
                         if (Token.getKeyword(ident)) |tag| {
@@ -227,14 +251,61 @@ pub const Tokenizer = struct {
                 }
             },
 
-            .number_literal => {
+            .number_literal => switch (self.buffer[self.index]) {
+                '.' => continue :state .int_period,
+                '_', 'a'...'d', 'f'...'o', 'q'...'z', 'A'...'D', 'F'...'O', 'Q'...'Z', '0'...'9' => {
+                    self.index += 1;
+                    continue :state .number_literal;
+                },
+                'e', 'E', 'p', 'P' => {
+                    continue :state .int_exponent;
+                },
+                else => {},
+            },
+            .int_exponent => {
                 self.index += 1;
                 switch (self.buffer[self.index]) {
-                    '0'...'9' => continue :state .number_literal,
-                    '\n' => self.index + 1,
+                    '-', '+' => {
+                        self.index += 1;
+                        continue :state .float;
+                    },
                     else => continue :state .number_literal,
                 }
             },
+            .int_period => {
+                self.index += 1;
+                switch (self.buffer[self.index]) {
+                    '_', 'a'...'d', 'f'...'o', 'q'...'z', 'A'...'D', 'F'...'O', 'Q'...'Z', '0'...'9' => {
+                        self.index += 1;
+                        continue :state .float;
+                    },
+                    'e', 'E', 'p', 'P' => {
+                        continue :state .float_exponent;
+                    },
+                    else => self.index -= 1,
+                }
+            },
+            .float => switch (self.buffer[self.index]) {
+                '_', 'a'...'d', 'f'...'o', 'q'...'z', 'A'...'D', 'F'...'O', 'Q'...'Z', '0'...'9' => {
+                    self.index += 1;
+                    continue :state .float;
+                },
+                'e', 'E', 'p', 'P' => {
+                    continue :state .float_exponent;
+                },
+                else => {},
+            },
+            .float_exponent => {
+                self.index += 1;
+                switch (self.buffer[self.index]) {
+                    '-', '+' => {
+                        self.index += 1;
+                        continue :state .float;
+                    },
+                    else => continue :state .float,
+                }
+            },
+
             .string_literal => {
                 self.index += 1;
                 switch (self.buffer[self.index]) {
@@ -272,8 +343,106 @@ pub const Tokenizer = struct {
                     else => continue :state .char_literal,
                 }
             },
+            .ampersand => {
+                self.index += 1;
+                switch (self.buffer[self.index]) {
+                    '&' => result.tag = .ampersand_ampersand,
+                    else => {
+                        result.tag = .invalid;
+                        continue :state .invalid;
+                    },
+                }
+            },
+            .pipe => {
+                self.index += 1;
+                switch (self.buffer[self.index]) {
+                    '|' => result.tag = .pipe_pipe,
+                    '>' => result.tag = .pipe_angle_bracket_right,
+                    else => {
+                        result.tag = .invalid;
+                        continue :state .invalid;
+                    },
+                }
+            },
+            .equal => {
+                self.index += 1;
+                switch (self.buffer[self.index]) {
+                    '=' => result.tag = .equal_equal,
+                    else => {},
+                }
+            },
+            .bang => {
+                self.index += 1;
+                switch (self.buffer[self.index]) {
+                    '=' => result.tag = .bang_equal,
+                    else => {},
+                }
+            },
+            .minus => {
+                self.index += 1;
+                switch (self.buffer[self.index]) {
+                    '=' => result.tag = .minus_equal,
+                    '>' => result.tag = .minus_angle_bracket_right,
+                    else => {},
+                }
+            },
+            .plus => {
+                self.index += 1;
+                switch (self.buffer[self.index]) {
+                    '=' => result.tag = .plus_equal,
+                    else => {},
+                }
+            },
+            .asterisk => {
+                self.index += 1;
+                switch (self.buffer[self.index]) {
+                    '=' => result.tag = .asterisk_equal,
+                    else => {},
+                }
+            },
+            .slash => {
+                self.index += 1;
+                switch (self.buffer[self.index]) {
+                    '=' => result.tag = .slash_equal,
+                    else => {},
+                }
+            },
         }
         result.end = self.index;
         return result;
     }
 };
+
+test "lexer: keywords" {
+    var token = Tokenizer.init("func let if then else");
+    try std.testing.expectEqual(Token.Tag.keyword_func, token.next().tag);
+    try std.testing.expectEqual(Token.Tag.keyword_let, token.next().tag);
+    try std.testing.expectEqual(Token.Tag.keyword_if, token.next().tag);
+    try std.testing.expectEqual(Token.Tag.identifier, token.next().tag);
+    try std.testing.expectEqual(Token.Tag.keyword_else, token.next().tag);
+}
+
+test "lexer: operators" {
+    var tok = Tokenizer.init("+ - * / % = == != < <= > -> |> && || ! | += *= -=");
+    try std.testing.expectEqual(Token.Tag.plus, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.minus, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.asterisk, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.slash, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.percent, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.equal, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.equal_equal, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.bang_equal, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.angle_bracket_left, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.angle_bracket_left_equal, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.angle_bracket_right, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.minus_angle_bracket_right, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.equal_angle_bracket_right, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.pipe_angle_bracket_right, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.ampersand_ampersand, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.pipe_pipe, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.bang, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.pipe, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.asterisk_equal, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.plus_equal, tok.next().tag);
+    try std.testing.expectEqual(Token.Tag.minus_equal, tok.next().tag);
+}

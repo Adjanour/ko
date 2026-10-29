@@ -1,0 +1,35 @@
+import std.io
+
+stats :: struct {
+    valid: u64,
+    review:[]u8
+}
+
+Row :: enum {
+    Valid(id: u64, amount: f64, vendor: []u8),
+    Incomplete(reason: []u8),
+    Corrupt,
+}
+
+parse_row :: (line:[]u8) -> Row
+{
+    let parts = line.split(',')
+
+    if parts.len != 3 {
+        return .Corrupt
+    }
+
+    let id =
+        u64.parse(parts[0])
+        or return .Incomplete("invalid id")
+
+    let amount =
+        f64.parse(parts[1])
+        or return .Incomplete("invalid amount")
+
+    if amount < 0 {
+        return .Incomplete("negative amount")
+    }
+
+    return .Valid(id, amount, parts[2])
+}
