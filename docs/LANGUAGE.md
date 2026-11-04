@@ -1,9 +1,13 @@
 
 # Kō v0 Frontend Language Contract
 
-**Status:** implementation contract
-**Scope:** lexer, parser, AST, diagnostics, and syntax-facing semantic invariants
+**Status:** lexer contract and planned frontend design
+**Scope:** current lexer behavior plus planned parser, AST, diagnostics, and syntax-facing semantic invariants
 **Non-goal:** this document does not fully specify the type system, ownership model, runtime, ABI, or standard library.
+
+The parser is not implemented yet. Syntax described here is a design contract
+for the future frontend; the tokenizer currently establishes only token kinds,
+boundaries, and progress guarantees.
 
 Any syntax change after this point should be deliberate and justified by an implementation or language-design problem.
 
@@ -17,9 +21,6 @@ Any syntax change after this point should be deliberate and justified by an impl
 import
 struct
 enum
-func
-let
-mut
 defer
 return
 break
@@ -27,37 +28,38 @@ continue
 if
 else
 while
+for
+in
 match
 try
 or
-as
 true
 false
-many
 ```
 
-`mut` is a v0 keyword.
-
-`as` is used for value capture.
-
-`many` appears only in the many-item pointer form:
+`many` is a contextual word in the many-item pointer form, not a global
+keyword:
 
 ```ko
 [*many]T
 ```
 
-### Reserved for future use
+### Unreserved words
 
 ```text
-for
-in
+func
+let
+mut
+as
+many
 pub
 const
 union
 type
 ```
 
-Reserved words may not currently be used as identifiers.
+These are ordinary identifiers. Kō does not reserve words solely for possible
+future features.
 
 ### Predeclared identifiers
 
@@ -84,11 +86,20 @@ A lone `_` is tokenized separately as `UNDERSCORE`.
 ### Literals
 
 ```text
-INT
-FLOAT
+NUMBER
 STRING
 CHAR
 ```
+
+The tokenizer emits one `NUMBER` token class for decimal, hexadecimal, binary,
+fractional, and exponent forms. It does not decide whether a number is an
+integer or floating-point value, nor does it choose a concrete type. Those are
+later semantic decisions.
+
+Numeric separators (`_`) must occur between digits. A base prefix or exponent
+must be followed by at least one digit. Like Zig, the tokenizer preserves a
+broad number-like span as `NUMBER`; the parser or literal-decoding stage
+validates these spelling rules and reports malformed numbers.
 
 Examples:
 
@@ -114,17 +125,21 @@ Examples:
 && || !
 = += -= *= /=
 |>
+->
 ```
 
 ### Punctuation
 
 ```text
 ( ) { } [ ]
-, : ; .
+, : :: := ; . ..
 #
 =>
 ?
 ```
+
+`..` is the range operator. Declaration syntax uses `::` for named constants,
+types, and procedures, and `:=` for inferred local variables.
 
 ### Trivia
 
@@ -134,7 +149,12 @@ Whitespace and comments are discarded by the lexer except where a newline may pr
 // line comment
 
 /* block comment */
+
+/* outer /* nested */ outer */
 ```
+
+Block comments nest. An unterminated block comment is invalid. Comments emit no
+tokens, but newlines inside comments still participate in `TERM` insertion.
 
 ### Lexer policy
 
@@ -166,7 +186,7 @@ Initial v0 terminators include:
 
 ```text
 IDENT
-INT FLOAT STRING CHAR
+NUMBER STRING CHAR
 true false
 )
 ]
@@ -272,13 +292,17 @@ program       ::= ( declaration | TERM )* EOF
 
 declaration   ::=
       import_decl
-    | struct_decl
-    | enum_decl
-    | func_decl
+    | named_decl
 
 import_decl   ::= "import" path
 
 path          ::= IDENT ( "." IDENT )*
+
+named_decl    ::= IDENT "::"
+                  ( "struct" "{" field_list? "}"
+                  | "enum" "{" variant_list? "}"
+                  | "(" param_list? ")" ( "->" type )? block
+                  | expression )
 ```
 
 Example:
@@ -311,7 +335,7 @@ struct Header {
 ## 6. Structs and enums
 
 ```ebnf
-struct_decl ::= "struct" IDENT directive* "{" field_list? "}"
+struct_expr ::= "struct" directive* "{" field_list? "}"
 
 field_list ::= field ( "," field )* ","?
 
@@ -321,7 +345,7 @@ field ::= directive* IDENT ":" type
 Example:
 
 ```ko
-struct Stats {
+Stats :: struct {
     valid: u64,
     corrupt: u64,
     total: f64,
@@ -331,7 +355,7 @@ struct Stats {
 Enums:
 
 ```ebnf
-enum_decl ::= "enum" IDENT directive* "{" variant_list? "}"
+enum_expr ::= "enum" directive* "{" variant_list? "}"
 
 variant_list ::= variant ( "," variant )* ","?
 
@@ -341,7 +365,7 @@ variant ::= IDENT ( "(" field_list ")" )?
 Example:
 
 ```ko
-enum Row {
+Row :: enum {
     Valid(id: u64, amount: f64),
     Incomplete(reason: []u8),
     Corrupt,
@@ -350,14 +374,14 @@ enum Row {
 
 ---
 
-## 7. Functions
+## 7. Procedures
 
 ```ebnf
-func_decl ::= "func" IDENT "(" param_list? ")" type? block
+procedure ::= "(" param_list? ")" ( "->" type )? block
 
 param_list ::= param ( "," param )* ","?
 
-param ::= "mut"? IDENT ":" type
+param ::= IDENT ":" type
 ```
 
 If the return type is omitted, it is `void`.
@@ -365,22 +389,18 @@ If the return type is omitted, it is `void`.
 Examples:
 
 ```ko
-func reset(mut s: Stats) {
+reset :: (s: Stats) {
     ...
 }
 
-func parse(line: []u8) Row {
+parse :: (line: []u8) -> Row {
     ...
 }
 
-func read() !?[]u8 {
+read :: () -> !?[]u8 {
     ...
 }
 ```
-
-A `mut` parameter represents temporary mutable access to the supplied value.
-
-It is not a general first-class reference and may not itself be stored or returned.
 
 ---
 
@@ -390,15 +410,19 @@ It is not a general first-class reference and may not itself be stored or return
 block ::= "{" ( statement | TERM )* "}"
 
 statement ::=
-      let_stmt
+      inferred_decl
+    | typed_decl
     | assign_stmt
     | defer_stmt
     | return_stmt
     | flow_stmt
     | while_stmt
+    | for_stmt
     | expr_stmt
 
-let_stmt ::= "let" "mut"? IDENT ( ":" type )? "=" expression
+inferred_decl ::= IDENT ":=" expression
+
+typed_decl ::= IDENT ":" type "=" expression
 
 assign_stmt ::= postfix assign_op expression
 
@@ -414,9 +438,15 @@ expr_stmt ::= expression
 Examples:
 
 ```ko
-let count = 0
+count := 0
 
-let mut count: u64 = 0
+total: u64 = 0
+
+GLOB_DATA :: "sleep"
+
+parse_row :: (line: []u8) -> Row {
+    return .Corrupt
+}
 
 count += 1
 
@@ -427,27 +457,26 @@ return value
 
 Variables must be initialized when declared.
 
+`::` is the named-declaration form for constants, types, and procedures.
+`:=` declares a mutable local with an inferred type. `name: Type = value`
+declares a mutable local with an explicit type.
+
+This declaration direction follows the syntax documented by [Odin's declaration
+syntax](https://odin-lang.org/news/declaration-syntax/) and the Jai examples in
+the [Jai Primer](https://github.com/BSVino/JaiPrimer/blob/master/JaiPrimer.md).
+
 ---
 
 ## 9. Mutation
 
-Mutable local bindings use:
+Local variables are mutable by default:
 
 ```ko
-let mut x = value
+x := value
+x = next_value
 ```
 
-Mutable parameters use:
-
-```ko
-func update(mut x: T) {
-    ...
-}
-```
-
-Ordinary values are immutable by default.
-
-General pointer-based mutation is not the default mutation mechanism.
+Named declarations created with `::` are constants and cannot be reassigned.
 
 ---
 
@@ -456,7 +485,7 @@ General pointer-based mutation is not the default mutation mechanism.
 ### While
 
 ```ebnf
-capture ::= "as" IDENT
+capture ::= "|" IDENT "|"
 
 while_stmt ::= "while" expression capture? block
 ```
@@ -464,7 +493,7 @@ while_stmt ::= "while" expression capture? block
 Example:
 
 ```ko
-while try reader.read_line() as line {
+while reader.read_line() |line| {
     process(line)
 }
 ```
@@ -482,7 +511,7 @@ The loop terminates when the optional is empty.
 ```ebnf
 if_expr ::=
     "if" expression capture? block
-    ( "else" capture? ( if_expr | block ) )?
+    ( "else" ( if_expr | block ) )?
 ```
 
 Examples:
@@ -496,14 +525,39 @@ if ready {
 and:
 
 ```ko
-if result as value {
-    use(value)
+if find_user(id) |user| {
+    use(user)
 } else {
     fallback()
 }
 ```
 
-Exact capture semantics depend on the type of the condition and are validated during semantic analysis.
+Without a capture, the condition must be boolean. With a capture, the
+condition must produce `?T`; the binding has type `T` and exists only in the
+successful block. Error values are handled by `try` or `or`, not by conditional
+capture.
+
+---
+
+### For
+
+```ebnf
+for_stmt ::= "for" for_pattern "in" expression block
+
+for_pattern ::= IDENT ( "," IDENT )*
+```
+
+```ko
+for item in items {
+    process(item)
+}
+
+for i in 0..items.len {
+    process(items[i])
+}
+```
+
+`a..b` is a half-open range: it contains `a` and excludes `b`.
 
 ---
 
@@ -572,7 +626,9 @@ expression ::= pipe ( "or" fallback )?
 
 fallback ::= return_stmt | flow_stmt | block | expression
 
-pipe ::= binary ( "|>" pipe_target )*
+pipe ::= range ( "|>" pipe_target )*
+
+range ::= binary ( ".." binary )?
 
 pipe_target ::= postfix
 
@@ -601,7 +657,7 @@ enum_lit ::= "." IDENT ( "(" args? ")" )?
 
 args ::= expression ( "," expression )* ","?
 
-literal ::= INT | FLOAT | STRING | CHAR | "true" | "false"
+literal ::= NUMBER | STRING | CHAR | "true" | "false"
 ```
 
 ---
@@ -691,7 +747,7 @@ Fallible values use:
 `try` propagates the error:
 
 ```ko
-let file = try io.open(path)
+file := try io.open(path)
 ```
 
 Conceptually:
@@ -709,7 +765,7 @@ on success, otherwise the enclosing function returns the error.
 Example:
 
 ```ko
-let id = u64.parse(text) or return .Invalid
+id := u64.parse(text) or return .Invalid
 ```
 
 The left-hand side must be a fallible expression.
@@ -782,7 +838,7 @@ rather than relying on ambiguous parsing.
 
 ---
 
-## 17. Integer literals and numeric coercion
+## 17. Numeric literals and coercion
 
 Unsuffixed numeric literals begin without a fixed concrete integer or floating-point type.
 
@@ -791,7 +847,7 @@ Their type is resolved from context when possible.
 Examples:
 
 ```ko
-let x: u64 = 1
+x: u64 = 1
 amount < 0
 stats.total += 1
 ```
@@ -859,7 +915,7 @@ Allocator and arena behavior should initially be expressed through ordinary libr
 Example:
 
 ```ko
-let arena = mem.Arena.init()
+arena := mem.Arena.init()
 defer arena.free()
 ```
 
@@ -916,10 +972,10 @@ expected syntax where meaningful
 Example style:
 
 ```text
-error: expected expression after `=`
+error: expected expression after `:=`
 
-    let value =
-                ^
+    value :=
+             ^
 ```
 
 Diagnostics should prefer teaching the programmer what the parser expected rather than merely reporting an internal parser state.

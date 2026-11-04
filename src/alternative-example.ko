@@ -1,8 +1,14 @@
 import std.io
+import std.mem
 
-stats :: struct {
+MAX_ROWS :: 10_000
+MIN_AMOUNT :: 0.0
+
+Stats :: struct {
     valid: u64,
-    review:[]u8
+    incomplete: u64,
+    corrupt: u64,
+    total: f64,
 }
 
 Row :: enum {
@@ -11,25 +17,118 @@ Row :: enum {
     Corrupt,
 }
 
-parse_row :: (line:[]u8) -> Row
-{
-    let parts = line.split(',')
+Report :: struct {
+    stats: Stats,
+    accepted: []Row,
+}
+
+normalize_vendor :: (vendor: []u8) -> []u8 {
+    return vendor
+        |> trim
+        |> lowercase
+}
+
+parse_row :: (line: []u8) -> Row {
+    parts := line.split(',')
 
     if parts.len != 3 {
         return .Corrupt
     }
 
-    let id =
-        u64.parse(parts[0])
+    id := u64.parse(parts[0])
         or return .Incomplete("invalid id")
 
-    let amount =
-        f64.parse(parts[1])
+    amount := f64.parse(parts[1])
         or return .Incomplete("invalid amount")
 
-    if amount < 0 {
+    if amount < MIN_AMOUNT {
         return .Incomplete("negative amount")
     }
 
-    return .Valid(id, amount, parts[2])
+    vendor := normalize_vendor(parts[2])
+
+    if vendor.first() |first_byte| {
+        if first_byte == '#' {
+            return .Incomplete("reserved vendor prefix")
+        }
+    } else {
+        return .Incomplete("missing vendor")
+    }
+
+    return .Valid(id, amount, vendor)
+}
+
+summarize :: (lines: [][]u8, arena: mem.Arena) -> Report {
+    defer arena.release_unused()
+
+    stats := Stats {
+        valid: 0,
+        incomplete: 0,
+        corrupt: 0,
+        total: 0.0,
+    }
+
+    accepted := arena.list(Row)
+
+    for line in lines {
+        row := parse_row(line)
+
+        match row {
+            .Valid(id, amount, vendor) => {
+                stats.valid += 1
+                stats.total += amount
+                accepted.append(.Valid(id, amount, vendor))
+            },
+            .Incomplete(reason) => {
+                stats.incomplete += 1
+                io.warn(reason)
+            },
+            .Corrupt => {
+                stats.corrupt += 1
+            },
+        }
+    }
+
+    return Report {
+        stats: stats,
+        accepted: accepted.slice(),
+    }
+}
+
+print_report :: (report: Report) {
+    io.print("accepted rows")
+
+    for row, index in report.accepted {
+        match row {
+            .Valid(id, amount, vendor) => {
+                io.print_row(index, id, amount, vendor)
+            },
+            .Incomplete(_) => {},
+            .Corrupt => {},
+        }
+    }
+
+    for bucket in 0..4 {
+        io.print_bucket(bucket)
+    }
+
+    io.print_stats(report.stats)
+}
+
+main :: () -> !void {
+    arena := mem.Arena.init()
+    defer arena.deinit()
+
+    file := try io.open("rows.csv")
+    defer file.close()
+
+    lines := file.read_lines(arena)
+        or return .ReadFailed
+
+    if lines.first() |header| {
+        io.print_header(header)
+    }
+
+    report := summarize(lines, arena)
+    print_report(report)
 }

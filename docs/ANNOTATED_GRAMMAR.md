@@ -1,6 +1,26 @@
 
 # Kō v0 Annotated Grammar
 
+> **Current status:** This is planned parser design. The repository currently
+> implements only the tokenizer.
+
+Current declaration and control-flow direction:
+
+```ko
+name :: value
+name := value
+Person :: struct {}
+Color :: enum {}
+parse :: (text: []u8) -> Result {}
+for item in items {}
+for i in 0..items.len {}
+if find_user(id) |user| {}
+while iterator.next() |item| {}
+```
+
+`func`, `let`, `mut`, and `as` are ordinary identifiers, not keywords. Ranges
+are half-open. Pattern bindings inside `match` capture directly; `|name|` is
+optional conditional capture.
 
 ## Reading the notation
 
@@ -59,7 +79,7 @@ means:
 Quoted values such as:
 
 ```ebnf
-"func"
+"::"
 "{"
 "=>"
 ```
@@ -70,7 +90,7 @@ Names such as:
 
 ```ebnf
 IDENTIFIER
-INT
+NUMBER
 STRING
 TERM
 EOF
@@ -92,13 +112,14 @@ program ::=
     ( declaration | TERM )* EOF
 
 
-// v0 permits four kinds of top-level declaration.
+// Top-level declarations are imports or uniformly named declarations.
 
 declaration ::=
       import_decl
-    | struct_decl
-    | enum_decl
-    | func_decl
+    | named_decl
+
+named_decl ::=
+    IDENTIFIER "::" ( struct_expr | enum_expr | procedure | expression )
 ```
 
 Your original version was:
@@ -206,8 +227,8 @@ This is an important grammar-design principle:
 # 4. Structs
 
 ```ebnf
-struct_decl ::=
-    "struct" IDENTIFIER directive*
+struct_expr ::=
+    "struct" directive*
     "{"
         field_list?
     "}"
@@ -226,7 +247,7 @@ field ::=
 Example:
 
 ```ko
-struct Header #repr(C) {
+Header :: struct #repr(C) {
     version: u32,
     length: u64,
 }
@@ -249,19 +270,19 @@ It says:
 Thus all of these work:
 
 ```ko
-struct A {
+A :: struct {
     x: u64
 }
 ```
 
 ```ko
-struct A {
+A :: struct {
     x: u64,
 }
 ```
 
 ```ko
-struct A {
+A :: struct {
     x: u64,
     y: u64,
 }
@@ -272,8 +293,8 @@ struct A {
 # 5. Enums
 
 ```ebnf
-enum_decl ::=
-    "enum" IDENTIFIER directive*
+enum_expr ::=
+    "enum" directive*
     "{"
         variant_list?
     "}"
@@ -291,7 +312,7 @@ variant ::=
 Examples:
 
 ```ko
-enum State {
+State :: enum {
     Ready,
     Failed,
 }
@@ -300,7 +321,7 @@ enum State {
 and:
 
 ```ko
-enum Row {
+Row :: enum {
     Valid(id: u64, amount: f64),
     Incomplete(reason: []u8),
     Corrupt,
@@ -493,14 +514,12 @@ Those belong to semantic/type checking.
 
 ---
 
-# 7. Functions
+# 7. Procedures
 
 ```ebnf
-func_decl ::=
-    "func"
-    IDENTIFIER
+procedure ::=
     "(" param_list? ")"
-    type?
+    ( "->" type )?
     block
 
 
@@ -509,41 +528,41 @@ param_list ::=
 
 
 param ::=
-    "mut"? IDENTIFIER ":" type
+    IDENTIFIER ":" type
 ```
 
 Examples:
 
 ```ko
-func run() {
+run :: () {
 }
 ```
 
 No explicit return type means `void`.
 
 ```ko
-func parse(line: []u8) Row {
+parse :: (line: []u8) -> Row {
 }
 ```
 
 ```ko
-func read() !?[]u8 {
+read :: () -> !?[]u8 {
 }
 ```
 
 ```ko
-func tally(row: Row, mut stats: Stats) {
+tally :: (row: Row, stats: Stats) {
 }
 ```
 
 ---
 
-## Why `!` disappeared from `func_decl`
+## Why `!` belongs to the return type
 
 Your original grammar had:
 
 ```ebnf
-func_decl ::= "func" IDENTIFIER param_list "!"? type block
+procedure ::= "(" param_list? ")" "!"? type block
 ```
 
 That made `!` a special property of functions.
@@ -559,7 +578,7 @@ we no longer need that special case.
 This:
 
 ```ko
-func read() ![]u8
+read :: () -> ![]u8
 ```
 
 is simply:
@@ -573,7 +592,7 @@ function returning:
 And this:
 
 ```ko
-func read() !?[]u8
+read :: () -> !?[]u8
 ```
 
 also works naturally.
@@ -603,9 +622,9 @@ Now consider:
 
 ```ko
 {
-    let x = 10
+    x := 10
 
-    let y = 20
+    y := 20
 }
 ```
 
@@ -613,9 +632,9 @@ The lexer may produce approximately:
 
 ```text
 {
-LET IDENT = INT TERM
+IDENT := NUMBER TERM
 TERM
-LET IDENT = INT TERM
+IDENT := NUMBER TERM
 }
 ```
 
@@ -627,7 +646,8 @@ So the block grammar must tolerate `TERM` tokens.
 
 ```ebnf
 statement ::=
-      let_stmt
+      inferred_decl
+    | typed_decl
     | assignment
     | defer_stmt
     | return_stmt
@@ -650,7 +670,7 @@ That is deliberate.
 Therefore:
 
 ```ko
-let x = if ready {
+x := if ready {
     10
 } else {
     20
@@ -662,7 +682,7 @@ can eventually be legal.
 Likewise:
 
 ```ko
-let result = match value {
+result := match value {
     .Some(x) => x,
     .None    => 0,
 }
@@ -675,40 +695,35 @@ The parser does not need separate statement versions of these constructs.
 # 10. Local bindings
 
 ```ebnf
-let_stmt ::=
-    "let" "mut"?
-    IDENTIFIER
-    ( ":" type )?
-    "="
-    expression
+inferred_decl ::=
+    IDENTIFIER ":=" expression
+
+typed_decl ::=
+    IDENTIFIER ":" type "=" expression
 ```
 
 Examples:
 
 ```ko
-let x = 10
+x := 10
 ```
 
 ```ko
-let x: u64 = 10
+x: u64 = 10
 ```
 
 ```ko
-let mut x = 10
-```
-
-```ko
-let mut x: u64 = 10
+x = 20
 ```
 
 This grammar also encodes one deliberate Kō property:
 
-> There is no uninitialized `let`.
+> There is no uninitialized local declaration.
 
 There is no production for:
 
 ```ko
-let x: u64
+x: u64
 ```
 
 because `=` and an expression are mandatory.
@@ -912,19 +927,19 @@ This is one reason the lexer and parser contracts cannot be designed independent
 
 ```ebnf
 capture ::=
-    "as" IDENTIFIER
+    "|" IDENTIFIER "|"
 ```
 
 Example:
 
 ```ko
-while reader.next() as item {
+while reader.next() |item| {
 }
 ```
 
 The grammar only tells us:
 
-> an `as name` capture may appear here.
+> a `|name|` capture may appear here.
 
 What that capture *means* depends upon the expression's type.
 
@@ -953,7 +968,7 @@ while running {
 and:
 
 ```ko
-while reader.next() as line {
+while reader.next() |line| {
     process(line)
 }
 ```
@@ -961,7 +976,7 @@ while reader.next() as line {
 and eventually:
 
 ```ko
-while try reader.read_line() as line {
+while reader.read_line() |line| {
     process(line)
 }
 ```
@@ -970,22 +985,42 @@ Notice the composition:
 
 ```text
 while
-    try
-        read_line()
-    as line
+    read_line()
+    |line|
 {
 }
 ```
 
-There isn't a special grammar rule for `while try`.
-
-`try` is simply part of the expression.
-
-Good grammars tend to gain expressive power through composition like this.
+Without a capture the condition must be boolean. With a capture it must
+produce `?T`; the captured name has type `T` inside the body.
 
 ---
 
-# 16. If expressions
+# 16. For loops
+
+```ebnf
+for_stmt ::=
+    "for" for_pattern "in" expression block
+
+for_pattern ::=
+    IDENTIFIER ( "," IDENTIFIER )*
+```
+
+```ko
+for item in items {
+    process(item)
+}
+
+for i in 0..items.len {
+    process(items[i])
+}
+```
+
+The range is half-open: the start is included and the end is excluded.
+
+---
+
+# 17. If expressions
 
 ```ebnf
 if_expr ::=
@@ -995,7 +1030,6 @@ if_expr ::=
     block
     (
         "else"
-        capture?
         (
             if_expr
           | block
@@ -1051,9 +1085,19 @@ or:
 
 So `else if` emerges naturally.
 
+Conditional capture uses the same optional-payload rule as `while`:
+
+```ko
+if find_user(id) |user| {
+    greet(user)
+} else {
+    report_missing_user()
+}
+```
+
 ---
 
-# 17. Match expressions
+# 18. Match expressions
 
 ```ebnf
 match_expr ::=
@@ -1267,8 +1311,12 @@ recovery_expr ::=
 
 
 pipe_expr ::=
-    binary_expr
+    range_expr
     ( "|>" pipe_target )*
+
+range_expr ::=
+    binary_expr
+    ( ".." binary_expr )?
 
 
 // `binary_expr` is handled by the Pratt engine.
@@ -1608,8 +1656,7 @@ Some are cleaner as parser-context rules.
 
 ```ebnf
 literal ::=
-      INT
-    | FLOAT
+      NUMBER
     | STRING
     | CHAR
     | "true"
@@ -1622,7 +1669,7 @@ The lexer determines whether source text such as:
 123
 ```
 
-is an `INT`.
+is a `NUMBER`.
 
 The parser should not care whether it was:
 
@@ -1633,7 +1680,9 @@ The parser should not care whether it was:
 1_000
 ```
 
-Those are all lexical representations of the same token class.
+Those are all lexical representations of the same token class. The parser sees
+`NUMBER`; later semantic analysis determines whether the value is integral or
+floating-point and chooses its concrete type from context.
 
 ---
 
@@ -1887,7 +1936,7 @@ flow_fallback ::=
 Example:
 
 ```ko
-let id =
+id :=
     u64.parse(text)
     or return .Incomplete("bad id")
 ```
@@ -1970,9 +2019,7 @@ program ::=
 
 declaration ::=
       import_decl
-    | struct_decl
-    | enum_decl
-    | func_decl
+    | named_decl
 
 import_decl ::=
     "import" path
@@ -1993,14 +2040,14 @@ directive ::=
 // DATA
 // ------------------------------------------------------------
 
-struct_decl ::=
-    "struct" IDENTIFIER directive*
+struct_expr ::=
+    "struct" directive*
     "{"
         field_list?
     "}"
 
-enum_decl ::=
-    "enum" IDENTIFIER directive*
+enum_expr ::=
+    "enum" directive*
     "{"
         variant_list?
     "}"
@@ -2039,21 +2086,27 @@ type ::=
 
 
 // ------------------------------------------------------------
-// FUNCTIONS
+// NAMED DECLARATIONS AND PROCEDURES
 // ------------------------------------------------------------
 
-func_decl ::=
-    "func"
+named_decl ::=
     IDENTIFIER
+    "::"
+    ( struct_expr
+    | enum_expr
+    | procedure
+    | expression )
+
+procedure ::=
     "(" param_list? ")"
-    type?
+    ( "->" type )?
     block
 
 param_list ::=
     param ( "," param )* ","?
 
 param ::=
-    "mut"? IDENTIFIER ":" type
+    IDENTIFIER ":" type
 
 
 // ------------------------------------------------------------
@@ -2071,20 +2124,21 @@ block ::=
 // ------------------------------------------------------------
 
 statement ::=
-      let_stmt
+      inferred_decl
+    | typed_decl
     | assignment
     | defer_stmt
     | return_stmt
     | flow_stmt
     | while_stmt
+    | for_stmt
     | expr_stmt
 
-let_stmt ::=
-    "let" "mut"?
-    IDENTIFIER
-    ( ":" type )?
-    "="
-    expression
+inferred_decl ::=
+    IDENTIFIER ":=" expression
+
+typed_decl ::=
+    IDENTIFIER ":" type "=" expression
 
 // Implementation note:
 // Parse the candidate lhs first, then recognize an assignment operator.
@@ -2119,13 +2173,19 @@ expr_stmt ::=
 // ------------------------------------------------------------
 
 capture ::=
-    "as" IDENTIFIER
+    "|" IDENTIFIER "|"
 
 while_stmt ::=
     "while"
     expression
     capture?
     block
+
+for_stmt ::=
+    "for" for_pattern "in" expression block
+
+for_pattern ::=
+    IDENTIFIER ( "," IDENTIFIER )*
 
 
 // ------------------------------------------------------------
@@ -2139,7 +2199,6 @@ if_expr ::=
     block
     (
         "else"
-        capture?
         (
             if_expr
           | block
@@ -2232,8 +2291,12 @@ flow_fallback ::=
 // f(x + 1)
 
 pipe_expr ::=
-    binary_expr
+    range_expr
     ( "|>" pipe_target )*
+
+range_expr ::=
+    binary_expr
+    ( ".." binary_expr )?
 
 pipe_target ::=
     postfix_expr
@@ -2361,8 +2424,7 @@ args ::=
 // ------------------------------------------------------------
 
 literal ::=
-      INT
-    | FLOAT
+      NUMBER
     | STRING
     | CHAR
     | "true"

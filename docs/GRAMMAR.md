@@ -1,4 +1,7 @@
 
+This grammar describes the planned parser. The repository currently implements
+the tokenizer only; grammar productions are not parser code yet.
+
 ```ebnf
 
 // TOP LEVEL
@@ -8,9 +11,7 @@ program ::=
 
 declaration ::=
       import_decl
-    | struct_decl
-    | enum_decl
-    | func_decl
+    | named_decl
 
 import_decl ::=
     "import" path
@@ -29,17 +30,11 @@ directive ::=
 
 // DATA DECLARATIONS
 
-struct_decl ::=
-    "struct" IDENTIFIER directive*
-    "{"
-        field_list?
-    "}"
+struct_expr ::=
+    "struct" directive* "{" field_list? "}"
 
-enum_decl ::=
-    "enum" IDENTIFIER directive*
-    "{"
-        variant_list?
-    "}"
+enum_expr ::=
+    "enum" directive* "{" variant_list? "}"
 
 field_list ::=
     field ( "," field )* ","?
@@ -64,21 +59,30 @@ type ::=
     | "[" "*" "many" "]" type
     | path
 
+// `many` is contextual here: the tokenizer emits IDENTIFIER, and the parser
+// recognizes the lexeme `many` only in this type form.
 
-// FUNCTIONS
 
-func_decl ::=
-    "func"
-    IDENTIFIER
+// NAMED DECLARATIONS AND PROCEDURES
+
+procedure ::=
     "(" param_list? ")"
-    type?
+    ( "->" type )?
     block
+
+named_decl ::=
+    IDENTIFIER
+    "::"
+    ( struct_expr
+    | enum_expr
+    | procedure
+    | expression )
 
 param_list ::=
     param ( "," param )* ","?
 
 param ::=
-    "mut"? IDENTIFIER ":" type
+    IDENTIFIER ":" type
 
 
 // BLOCKS AND STATEMENTS
@@ -89,20 +93,21 @@ block ::=
     "}"
 
 statement ::=
-      let_stmt
+      inferred_decl
+    | typed_decl
     | assignment
     | defer_stmt
     | return_stmt
     | flow_stmt
     | while_stmt
+    | for_stmt
     | expr_stmt
 
-let_stmt ::=
-    "let" "mut"?
-    IDENTIFIER
-    ( ":" type )?
-    "="
-    expression
+inferred_decl ::=
+    IDENTIFIER ":=" expression
+
+typed_decl ::=
+    IDENTIFIER ":" type "=" expression
 
 assignment ::=
     postfix_expr assign_op expression
@@ -132,13 +137,19 @@ expr_stmt ::=
 // CAPTURE AND LOOPS
 
 capture ::=
-    "as" IDENTIFIER
+    "|" IDENTIFIER "|"
 
 while_stmt ::=
     "while"
     expression
     capture?
     block
+
+for_stmt ::=
+    "for" for_pattern "in" expression block
+
+for_pattern ::=
+    IDENTIFIER ( "," IDENTIFIER )*
 
 
 // IF EXPRESSIONS
@@ -150,7 +161,6 @@ if_expr ::=
     block
     (
         "else"
-        capture?
         (
             if_expr
           | block
@@ -220,8 +230,12 @@ flow_fallback ::=
     | "continue"
 
 pipe_expr ::=
-    binary_expr
+    range_expr
     ( "|>" pipe_target )*
+
+range_expr ::=
+    binary_expr
+    ( ".." binary_expr )?
 
 pipe_target ::=
     postfix_expr
@@ -297,8 +311,7 @@ args ::=
     ","?
 
 literal ::=
-      INT
-    | FLOAT
+      NUMBER
     | STRING
     | CHAR
     | "true"
