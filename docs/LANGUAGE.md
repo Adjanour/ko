@@ -1,9 +1,9 @@
 
 # Kō v0 Frontend Language Contract
 
-**Status:** lexer contract and planned frontend design
+**Status:** The tokenizer is currently complete next up is the parser.
 **Scope:** current lexer behavior plus planned parser, AST, diagnostics, and syntax-facing semantic invariants
-**Non-goal:** this document does not fully specify the type system, ownership model, runtime, ABI, or standard library.
+
 
 The parser is not implemented yet. Syntax described here is a design contract
 for the future frontend; the tokenizer currently establishes only token kinds,

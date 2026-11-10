@@ -167,7 +167,7 @@ The sentinel is not part of `source.len`. For `"let"`:
 
 ```text
 source bytes: l e t
-indexes:       0 1 2 3
+indexes:      0 1 2 3
                          sentinel
 source.len == 3
 ```

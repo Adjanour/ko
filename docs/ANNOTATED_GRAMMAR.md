@@ -24,18 +24,20 @@ optional conditional capture.
 
 ## Reading the notation
 
-Before the language itself, remember what the EBNF operators mean:
+Before the language itself, remember what the ISO-style EBNF operators mean:
 
 ```ebnf
-A ::= B
+A = B ;
 ```
 
 means:
 
 > A is defined as B.
 
+Alternatives are separated with `|`:
+
 ```ebnf
-A | B
+A = B | C ;
 ```
 
 means:
@@ -43,7 +45,7 @@ means:
 > either A or B.
 
 ```ebnf
-X?
+[ X ]
 ```
 
 means:
@@ -51,30 +53,34 @@ means:
 > zero or one X.
 
 ```ebnf
-X*
+{ X }
 ```
 
 means:
 
 > zero or more X.
 
+Square brackets mean zero or one occurrence. Braces mean zero or more
+occurrences. A comma means concatenation:
+
 ```ebnf
-X+
+A = "if", [ expression ], { ",", expression } ;
 ```
 
 means:
 
-> one or more X.
+> an `if`, optionally followed by an expression, followed by zero or more
+> comma-expression pairs.
 
 Parentheses group grammar expressions:
 
 ```ebnf
-( "," expression )*
+A = ( B | C ), D ;
 ```
 
 means:
 
-> zero or more occurrences of comma followed by an expression.
+> B or C followed by D.
 
 Quoted values such as:
 
@@ -103,29 +109,27 @@ are tokens produced by the lexer.
 # 1. Program structure
 
 ```ebnf
-// A source file is simply a sequence of declarations and terminators.
-//
-// TERM appears here because blank lines / inserted statement terminators
-// may occur between top-level declarations.
+(* A source file is simply a sequence of declarations and terminators.
 
-program ::=
-    ( declaration | TERM )* EOF
+   TERM appears here because blank lines / inserted statement terminators
+   may occur between top-level declarations. *)
+
+program = { declaration | TERM }, EOF ;
 
 
-// Top-level declarations are imports or uniformly named declarations.
+(* Top-level declarations are imports or uniformly named declarations. *)
 
-declaration ::=
-      import_decl
-    | named_decl
+declaration = import_decl | named_decl ;
 
-named_decl ::=
-    IDENTIFIER "::" ( struct_expr | enum_expr | procedure | expression )
+named_decl =
+    IDENTIFIER, "::",
+    ( struct_expr | enum_expr | procedure | expression ) ;
 ```
 
-Your original version was:
+An earlier version was:
 
 ```ebnf
-program ::= declaration* EOF
+program = { declaration }, EOF ;
 ```
 
 That was completely reasonable initially.
@@ -143,23 +147,21 @@ between declarations, the parser must be willing to encounter them.
 # 2. Imports and paths
 
 ```ebnf
-import_decl ::=
-    "import" path
+import_decl = "import", path ;
 
 
-// A path represents a qualified name.
-//
-// Examples:
-//
-//     io
-//     std.io
-//     std.mem.Allocator
+(* A path represents a qualified name.
 
-path ::=
-    IDENTIFIER ( "." IDENTIFIER )*
+   Examples:
+
+       io
+       std.io
+       std.mem.Allocator *)
+
+path = IDENTIFIER, { ".", IDENTIFIER } ;
 ```
 
-Your original rule:
+An earlier rule:
 
 ```ebnf
 "import" IDENTIFIER ( "." IDENTIFIER )*
@@ -184,24 +186,21 @@ Instead of teaching the grammar what a qualified name looks like multiple times,
 # 3. Directives
 
 ```ebnf
-// Directives attach metadata to declarations or fields.
-//
-// Examples:
-//
-//     #repr(C)
-//
-//     #align(8)
-//
-//     #something(foo, bar)
+(* Directives attach metadata to declarations or fields.
 
-directive ::=
-    "#" IDENTIFIER ( "(" args? ")" )?
+   Examples:
+
+       #repr(C)
+       #align(8)
+       #something(foo, bar) *)
+
+directive = "#", IDENTIFIER, [ "(", [ args ], ")" ] ;
 ```
 
-Your original rule was:
+An earlier rule was:
 
 ```ebnf
-directive ::= "#" IDENTIFIER ( "(" expression ")" )?
+directive = "#", IDENTIFIER, [ "(", expression, ")" ] ;
 ```
 
 That only allowed:
@@ -227,21 +226,15 @@ This is an important grammar-design principle:
 # 4. Structs
 
 ```ebnf
-struct_expr ::=
-    "struct" directive*
-    "{"
-        field_list?
-    "}"
+struct_expr = "struct", { directive }, "{", [ field_list ], "}" ;
 
 
-field_list ::=
-    field ( "," field )* ","?
+field_list = field, { ",", field }, [ "," ] ;
 
 
-// Directives are permitted on individual fields as well.
+(* Directives are permitted on individual fields as well. *)
 
-field ::=
-    directive* IDENTIFIER ":" type
+field = { directive }, IDENTIFIER, ":", type ;
 ```
 
 Example:
@@ -256,7 +249,7 @@ Header :: struct #repr(C) {
 This:
 
 ```ebnf
-field_list ::= field ( "," field )* ","?
+field_list = field, { ",", field }, [ "," ] ;
 ```
 
 is worth recognizing as a common grammar pattern.
@@ -293,20 +286,13 @@ A :: struct {
 # 5. Enums
 
 ```ebnf
-enum_expr ::=
-    "enum" directive*
-    "{"
-        variant_list?
-    "}"
+enum_expr = "enum", { directive }, "{", [ variant_list ], "}" ;
 
 
-variant_list ::=
-    variant ( "," variant )* ","?
+variant_list = variant, { ",", variant }, [ "," ] ;
 
 
-variant ::=
-    IDENTIFIER
-    ( "(" field_list ")" )?
+variant = IDENTIFIER, [ "(", field_list, ")" ] ;
 ```
 
 Examples:
@@ -331,7 +317,7 @@ Row :: enum {
 Notice something useful here:
 
 ```ebnf
-variant ::= IDENTIFIER ( "(" field_list ")" )?
+variant = IDENTIFIER, [ "(", field_list, ")" ] ;
 ```
 
 means the grammar doesn't need separate rules for:
@@ -352,26 +338,26 @@ The payload is simply optional.
 
 # 6. Types
 
-This is one of the biggest changes from your original grammar.
+This is one of the biggest changes from the earlier grammar.
 
 ```ebnf
-// Types are recursive.
-//
-// That recursion is what makes constructions such as:
-//
-//     [][]u8
-//     ?[]u8
-//     !?[]u8
-//
-// possible.
+(* Types are recursive.
 
-type ::=
-      "!" type
-    | "?" type
-    | "[" "]" type
-    | "*" type
-    | "[" "*" "many" "]" type
-    | path
+   That recursion is what makes constructions such as:
+
+       [][]u8
+       ?[]u8
+       !?[]u8
+
+   possible. *)
+
+type =
+      "!", type
+    | "?", type
+    | "[", "]", type
+    | "*", type
+    | "[", "*", "many", "]", type
+    | path ;
 ```
 
 Read this carefully.
@@ -391,13 +377,13 @@ The parser sees:
 and applies:
 
 ```ebnf
-"[" "]" type
+"[", "]", type
 ```
 
 But that `type` can itself again be:
 
 ```ebnf
-"[" "]" type
+"[", "]", type
 ```
 
 Eventually it reaches:
@@ -517,18 +503,13 @@ Those belong to semantic/type checking.
 # 7. Procedures
 
 ```ebnf
-procedure ::=
-    "(" param_list? ")"
-    ( "->" type )?
-    block
+procedure = "(", [ param_list ], ")", [ "->", type ], block ;
 
 
-param_list ::=
-    param ( "," param )* ","?
+param_list = param, { ",", param }, [ "," ] ;
 
 
-param ::=
-    IDENTIFIER ":" type
+param = IDENTIFIER, ":", type ;
 ```
 
 Examples:
@@ -559,10 +540,10 @@ tally :: (row: Row, stats: Stats) {
 
 ## Why `!` belongs to the return type
 
-Your original grammar had:
+An earlier grammar had:
 
 ```ebnf
-procedure ::= "(" param_list? ")" "!"? type block
+procedure = "(", [ param_list ], ")", [ "!", type ], block ;
 ```
 
 That made `!` a special property of functions.
@@ -570,7 +551,7 @@ That made `!` a special property of functions.
 But after making types recursive:
 
 ```ebnf
-type ::= "!" type | ...
+type = "!", type | path ;
 ```
 
 we no longer need that special case.
@@ -604,16 +585,13 @@ This is a good example of grammar becoming **smaller by finding the right abstra
 # 8. Blocks
 
 ```ebnf
-block ::=
-    "{"
-        ( statement | TERM )*
-    "}"
+block = "{", { statement | TERM }, "}" ;
 ```
 
-Your original version:
+An earlier version:
 
 ```ebnf
-block ::= "{" statement* "}"
+block = "{", { statement }, "}" ;
 ```
 
 assumed statements appeared immediately beside each other.
@@ -645,7 +623,7 @@ So the block grammar must tolerate `TERM` tokens.
 # 9. Statements
 
 ```ebnf
-statement ::=
+statement =
       inferred_decl
     | typed_decl
     | assignment
@@ -653,7 +631,7 @@ statement ::=
     | return_stmt
     | flow_stmt
     | while_stmt
-    | expr_stmt
+    | expr_stmt ;
 ```
 
 Notice what disappeared:
@@ -695,11 +673,9 @@ The parser does not need separate statement versions of these constructs.
 # 10. Local bindings
 
 ```ebnf
-inferred_decl ::=
-    IDENTIFIER ":=" expression
+inferred_decl = IDENTIFIER, ":=", expression ;
 
-typed_decl ::=
-    IDENTIFIER ":" type "=" expression
+typed_decl = IDENTIFIER, ":", type, "=", expression ;
 ```
 
 Examples:
@@ -735,16 +711,15 @@ That is an example of a safety property partially enforced by syntax itself.
 # 11. Assignment
 
 ```ebnf
-assignment ::=
-    postfix_expr assign_op expression
+assignment = postfix_expr, assign_op, expression ;
 
 
-assign_op ::=
+assign_op =
       "="
     | "+="
     | "-="
     | "*="
-    | "/="
+    | "/=" ;
 ```
 
 Examples:
@@ -763,7 +738,7 @@ items[i] = value
 
 But there is an implementation subtlety here.
 
-You probably **should not implement this by asking the parser upfront**:
+The parser should not decide this upfront by asking:
 
 > Is the next thing an assignment or an expression?
 
@@ -818,8 +793,7 @@ This separation is important:
 For now:
 
 ```ebnf
-defer_stmt ::=
-    "defer" expression
+defer_stmt = "defer", expression ;
 ```
 
 Example:
@@ -831,7 +805,7 @@ defer file.close()
 I would keep this narrower than:
 
 ```ebnf
-"defer" statement
+"defer", statement
 ```
 
 for the initial compiler.
@@ -860,7 +834,7 @@ defer {
 we can deliberately extend this to:
 
 ```ebnf
-defer_stmt ::= "defer" ( expression | block )
+defer_stmt = "defer", ( expression | block ) ;
 ```
 
 rather than accidentally allowing every statement.
@@ -870,13 +844,12 @@ rather than accidentally allowing every statement.
 # 13. Return and loop flow
 
 ```ebnf
-return_stmt ::=
-    "return" expression?
+return_stmt = "return", [ expression ] ;
 
 
-flow_stmt ::=
+flow_stmt =
       "break"
-    | "continue"
+    | "continue" ;
 ```
 
 Examples:
@@ -926,8 +899,7 @@ This is one reason the lexer and parser contracts cannot be designed independent
 # 14. Captures
 
 ```ebnf
-capture ::=
-    "|" IDENTIFIER "|"
+capture = "|", IDENTIFIER, "|" ;
 ```
 
 Example:
@@ -950,11 +922,7 @@ That meaning belongs later in semantic analysis.
 # 15. While
 
 ```ebnf
-while_stmt ::=
-    "while"
-    expression
-    capture?
-    block
+while_stmt = "while", expression, [ capture ], block ;
 ```
 
 Examples:
@@ -999,11 +967,9 @@ produce `?T`; the captured name has type `T` inside the body.
 # 16. For loops
 
 ```ebnf
-for_stmt ::=
-    "for" for_pattern "in" expression block
+for_stmt = "for", for_pattern, "in", expression, block ;
 
-for_pattern ::=
-    IDENTIFIER ( "," IDENTIFIER )*
+for_pattern = IDENTIFIER, { ",", IDENTIFIER } ;
 ```
 
 ```ko
@@ -1023,18 +989,9 @@ The range is half-open: the start is included and the end is excluded.
 # 17. If expressions
 
 ```ebnf
-if_expr ::=
-    "if"
-    expression
-    capture?
-    block
-    (
-        "else"
-        (
-            if_expr
-          | block
-        )
-    )?
+if_expr =
+    "if", expression, [ capture ], block,
+    [ "else", ( if_expr | block ) ] ;
 ```
 
 Basic:
@@ -1067,7 +1024,7 @@ if x < 0 {
 }
 ```
 
-Notice that we don't need a special `"else if"` token.
+No special `"else if"` token is needed.
 
 The grammar says:
 
@@ -1100,26 +1057,15 @@ if find_user(id) |user| {
 # 18. Match expressions
 
 ```ebnf
-match_expr ::=
-    "match"
-    expression
-    "{"
-        (
-            match_arm
-            ( "," match_arm )*
-            ","?
-        )?
-    "}"
+match_expr =
+    "match", expression, "{",
+    [ match_arm, { ",", match_arm }, [ "," ] ],
+    "}" ;
 
 
-match_arm ::=
-    pattern
-    ( "if" expression )?
-    "=>"
-    (
-        block
-      | expression
-    )
+match_arm =
+    pattern, [ "if", expression ], "=>",
+    ( block | expression ) ;
 ```
 
 Simple:
@@ -1165,26 +1111,24 @@ The type checker / exhaustiveness checker later determines whether the match is 
 # 18. Patterns
 
 ```ebnf
-pattern ::=
+pattern =
       "_"
     | literal
     | IDENTIFIER
-    | variant_pattern
+    | variant_pattern ;
 
 
-variant_pattern ::=
-    "." IDENTIFIER
-    ( "(" pattern_list? ")" )?
+variant_pattern = ".", IDENTIFIER,
+    [ "(", [ pattern_list ], ")" ] ;
 
 
-pattern_list ::=
-    pattern ( "," pattern )* ","?
+pattern_list = pattern, { ",", pattern }, [ "," ] ;
 ```
 
-This is significantly stronger than your original:
+This is significantly stronger than the earlier grammar:
 
 ```ebnf
-pattern ::= "."? IDENTIFIER ...
+pattern = [ "." ], IDENTIFIER ;
 ```
 
 That earlier grammar made:
@@ -1238,10 +1182,10 @@ Nested patterns become possible because the payload contains **patterns**, not m
 That is why:
 
 ```ebnf
-pattern_list ::= pattern ...
+pattern_list = pattern, { ",", pattern } ;
 ```
 
-is preferable to your original:
+is preferable to the earlier form:
 
 ```ebnf
 IDENTIFIER ( "," IDENTIFIER )*
@@ -1251,10 +1195,10 @@ IDENTIFIER ( "," IDENTIFIER )*
 
 # 19. Expressions: the important conceptual change
 
-Your original grammar said:
+An earlier grammar said:
 
 ```ebnf
-expression ::= prefix_op? primary_expr
+expression = [ prefix_op ], primary_expr ;
                ( infix_op expression )*
 ```
 
@@ -1301,44 +1245,33 @@ The grammar therefore describes expression *categories*, while a precedence tabl
 Conceptually:
 
 ```ebnf
-expression ::=
-    recovery_expr
+expression = recovery_expr ;
 
 
-recovery_expr ::=
-    pipe_expr
-    ( "or" fallback )?
+recovery_expr = pipe_expr, [ "or", fallback ] ;
 
 
-pipe_expr ::=
-    range_expr
-    ( "|>" pipe_target )*
+pipe_expr = range_expr, { "|>", pipe_target } ;
 
-range_expr ::=
-    binary_expr
-    ( ".." binary_expr )?
+range_expr = binary_expr, [ "..", binary_expr ] ;
 
 
-// `binary_expr` is handled by the Pratt engine.
-// Do NOT recursively implement this exact production literally.
+(* `binary_expr` is handled by the Pratt engine.
+   This production is conceptual; binary parsing uses the Pratt engine. *)
 
-binary_expr ::=
-    unary_expr
-    ( binary_op unary_expr )*
+binary_expr = unary_expr, { binary_op, unary_expr } ;
 
 
-unary_expr ::=
-    unary_op* postfix_expr
+unary_expr = { unary_op }, postfix_expr ;
 
 
-postfix_expr ::=
-    primary_expr postfix_part*
+postfix_expr = primary_expr, { postfix_part } ;
 
 
-postfix_part ::=
+postfix_part =
       "." IDENTIFIER
-    | "(" args? ")"
-    | "[" expression "]"
+    | "(", [ args ], ")"
+    | "[", expression, "]" ;
 ```
 
 Think of these as progressively building an expression outward.
@@ -1350,14 +1283,14 @@ Think of these as progressively building an expression outward.
 A primary expression is the smallest self-contained expression.
 
 ```ebnf
-primary_expr ::=
+primary_expr =
       IDENTIFIER
     | literal
     | "(" expression ")"
     | enum_literal
     | struct_literal
     | if_expr
-    | match_expr
+    | match_expr ;
 ```
 
 Examples:
@@ -1390,7 +1323,7 @@ if condition { a } else { b }
 match value { ... }
 ```
 
-You can think of a primary as:
+A primary is:
 
 > something that can stand on its own before operators start attaching to it.
 
@@ -1399,17 +1332,16 @@ You can think of a primary as:
 # 22. Postfix expressions
 
 ```ebnf
-postfix_expr ::=
-    primary_expr postfix_part*
+postfix_expr = primary_expr, { postfix_part } ;
 
 
-postfix_part ::=
+postfix_part =
       "." IDENTIFIER
-    | "(" args? ")"
-    | "[" expression "]"
+    | "(", [ args ], ")"
+    | "[", expression, "]" ;
 ```
 
-This tiny rule solves several problems your original grammar could not handle.
+This rule solves several problems that the earlier grammar could not handle.
 
 Start with:
 
@@ -1477,7 +1409,7 @@ then:
 [0]
 ```
 
-and you get:
+producing:
 
 ```ko
 foo().bar(10)[0]
@@ -1496,8 +1428,7 @@ This is an extremely useful parser pattern.
 # 23. Function arguments
 
 ```ebnf
-args ::=
-    expression ( "," expression )* ","?
+args = expression, { ",", expression }, [ "," ] ;
 ```
 
 Examples:
@@ -1536,9 +1467,7 @@ contains no args.
 # 24. Enum literals
 
 ```ebnf
-enum_literal ::=
-    "." IDENTIFIER
-    ( "(" args? ")" )?
+enum_literal = ".", IDENTIFIER, [ "(", [ args ], ")" ] ;
 ```
 
 Examples:
@@ -1586,21 +1515,14 @@ expression
 # 25. Struct literals
 
 ```ebnf
-struct_literal ::=
-    path
-    "{"
-        struct_initializer_list?
-    "}"
+struct_literal = path, "{", [ struct_initializer_list ], "}" ;
 
 
-struct_initializer_list ::=
-    struct_initializer
-    ( "," struct_initializer )*
-    ","?
+struct_initializer_list =
+    struct_initializer, { ",", struct_initializer }, [ "," ] ;
 
 
-struct_initializer ::=
-    IDENTIFIER ":" expression
+struct_initializer = IDENTIFIER, ":", expression ;
 ```
 
 Example:
@@ -1636,7 +1558,7 @@ if (x == Point { x: 1 }) {
 
 The EBNF does not need to encode every contextual restriction.
 
-Your parser can carry a context flag such as:
+The parser can carry a context flag such as:
 
 ```text
 allow_struct_literal
@@ -1655,12 +1577,12 @@ Some are cleaner as parser-context rules.
 # 26. Literals
 
 ```ebnf
-literal ::=
+literal =
       NUMBER
     | STRING
     | CHAR
     | "true"
-    | "false"
+    | "false" ;
 ```
 
 The lexer determines whether source text such as:
@@ -1689,14 +1611,13 @@ floating-point and chooses its concrete type from context.
 # 27. Unary expressions
 
 ```ebnf
-unary_expr ::=
-    unary_op* postfix_expr
+unary_expr = { unary_op }, postfix_expr ;
 
 
-unary_op ::=
+unary_op =
       "!"
     | "-"
-    | "try"
+    | "try" ;
 ```
 
 Examples:
@@ -1751,7 +1672,7 @@ dereference
 pointer arithmetic
 ```
 
-Do not invent `&x` or `*p` in the parser merely because C, Rust, or Zig use them.
+The parser should not invent `&x` or `*p` merely because C, Rust, or Zig use them.
 
 That deserves its own language decision.
 
@@ -1760,7 +1681,7 @@ That deserves its own language decision.
 # 28. Binary operators
 
 ```ebnf
-binary_op ::=
+binary_op =
       "||"
     | "&&"
     | "=="
@@ -1773,12 +1694,12 @@ binary_op ::=
     | "-"
     | "*"
     | "/"
-    | "%"
+    | "%" ;
 ```
 
 But again:
 
-> Do not implement binary parsing by literally following this EBNF recursively.
+> Binary parsing should use the Pratt binding-power table rather than follow this EBNF recursively.
 
 Use Pratt binding powers.
 
@@ -1786,18 +1707,18 @@ Use Pratt binding powers.
 
 # 29. Pratt precedence
 
-From lowest to highest:
+The canonical binding powers, from lowest to highest, are:
 
 ```text
-1    ||
-2    &&
-3    == !=
-4    < > <= >=
-5    + -
-6    * / %
+10   ||
+20   &&
+30   == !=
+40   < > <= >=
+50   + -
+60   * / %
 ```
 
-Unary:
+Prefix operators use binding power `70`:
 
 ```text
 ! - try
@@ -1805,7 +1726,7 @@ Unary:
 
 binds tighter than binary operators.
 
-Postfix:
+Postfix operators use binding power `80`:
 
 ```text
 .x
@@ -1842,13 +1763,10 @@ groups approximately as:
 # 30. Pipeline expressions
 
 ```ebnf
-pipe_expr ::=
-    binary_expr
-    ( "|>" pipe_target )*
+pipe_expr = binary_expr, { "|>", pipe_target } ;
 
 
-pipe_target ::=
-    postfix_expr
+pipe_target = postfix_expr ;
 ```
 
 Examples:
@@ -1912,25 +1830,22 @@ x + f(1)
 # 31. Local error recovery
 
 ```ebnf
-recovery_expr ::=
-    pipe_expr
-    ( "or" fallback )?
+recovery_expr = pipe_expr, [ "or", fallback ] ;
 
 
-fallback ::=
+fallback =
       return_fallback
     | flow_fallback
     | block
-    | pipe_expr
+    | pipe_expr ;
 
 
-return_fallback ::=
-    "return" expression?
+return_fallback = "return", [ expression ] ;
 
 
-flow_fallback ::=
+flow_fallback =
       "break"
-    | "continue"
+    | "continue" ;
 ```
 
 Example:
@@ -1941,10 +1856,10 @@ id :=
     or return .Incomplete("bad id")
 ```
 
-Why don't we write:
+Why not write:
 
 ```ebnf
-fallback ::= expression
+fallback = expression ;
 ```
 
 and leave it there?
@@ -1980,8 +1895,7 @@ means:
 Finally:
 
 ```ebnf
-expr_stmt ::=
-    expression
+expr_stmt = expression ;
 ```
 
 That permits:
@@ -2002,451 +1916,30 @@ Semantic analysis may later reject expressions that make no sense as discarded v
 
 # 33. Complete grammar
 
-Once you understand the pieces above, the complete grammar becomes much less intimidating:
-
-```ebnf
-// ============================================================
-// KŌ v0 GRAMMAR
-// ============================================================
-
-
-// ------------------------------------------------------------
-// TOP LEVEL
-// ------------------------------------------------------------
-
-program ::=
-    ( declaration | TERM )* EOF
-
-declaration ::=
-      import_decl
-    | named_decl
-
-import_decl ::=
-    "import" path
-
-path ::=
-    IDENTIFIER ( "." IDENTIFIER )*
-
-
-// ------------------------------------------------------------
-// DIRECTIVES
-// ------------------------------------------------------------
-
-directive ::=
-    "#" IDENTIFIER ( "(" args? ")" )?
-
-
-// ------------------------------------------------------------
-// DATA
-// ------------------------------------------------------------
-
-struct_expr ::=
-    "struct" directive*
-    "{"
-        field_list?
-    "}"
-
-enum_expr ::=
-    "enum" directive*
-    "{"
-        variant_list?
-    "}"
-
-field_list ::=
-    field ( "," field )* ","?
-
-field ::=
-    directive* IDENTIFIER ":" type
-
-variant_list ::=
-    variant ( "," variant )* ","?
-
-variant ::=
-    IDENTIFIER
-    ( "(" field_list ")" )?
-
-
-// ------------------------------------------------------------
-// TYPES
-// ------------------------------------------------------------
-
-// Recursive by design.
-//
-// !?[]u8 becomes:
-//
-// error(optional(slice(u8)))
-
-type ::=
-      "!" type
-    | "?" type
-    | "[" "]" type
-    | "*" type
-    | "[" "*" "many" "]" type
-    | path
-
-
-// ------------------------------------------------------------
-// NAMED DECLARATIONS AND PROCEDURES
-// ------------------------------------------------------------
-
-named_decl ::=
-    IDENTIFIER
-    "::"
-    ( struct_expr
-    | enum_expr
-    | procedure
-    | expression )
-
-procedure ::=
-    "(" param_list? ")"
-    ( "->" type )?
-    block
-
-param_list ::=
-    param ( "," param )* ","?
-
-param ::=
-    IDENTIFIER ":" type
-
-
-// ------------------------------------------------------------
-// BLOCKS
-// ------------------------------------------------------------
-
-block ::=
-    "{"
-        ( statement | TERM )*
-    "}"
-
-
-// ------------------------------------------------------------
-// STATEMENTS
-// ------------------------------------------------------------
-
-statement ::=
-      inferred_decl
-    | typed_decl
-    | assignment
-    | defer_stmt
-    | return_stmt
-    | flow_stmt
-    | while_stmt
-    | for_stmt
-    | expr_stmt
-
-inferred_decl ::=
-    IDENTIFIER ":=" expression
-
-typed_decl ::=
-    IDENTIFIER ":" type "=" expression
-
-// Implementation note:
-// Parse the candidate lhs first, then recognize an assignment operator.
-// Semantic analysis later verifies that lhs is actually assignable.
-
-assignment ::=
-    postfix_expr assign_op expression
-
-assign_op ::=
-      "="
-    | "+="
-    | "-="
-    | "*="
-    | "/="
-
-defer_stmt ::=
-    "defer" expression
-
-return_stmt ::=
-    "return" expression?
-
-flow_stmt ::=
-      "break"
-    | "continue"
-
-expr_stmt ::=
-    expression
-
-
-// ------------------------------------------------------------
-// CAPTURE + LOOPS
-// ------------------------------------------------------------
-
-capture ::=
-    "|" IDENTIFIER "|"
-
-while_stmt ::=
-    "while"
-    expression
-    capture?
-    block
-
-for_stmt ::=
-    "for" for_pattern "in" expression block
-
-for_pattern ::=
-    IDENTIFIER ( "," IDENTIFIER )*
-
-
-// ------------------------------------------------------------
-// IF EXPRESSIONS
-// ------------------------------------------------------------
-
-if_expr ::=
-    "if"
-    expression
-    capture?
-    block
-    (
-        "else"
-        (
-            if_expr
-          | block
-        )
-    )?
-
-
-// ------------------------------------------------------------
-// MATCH EXPRESSIONS
-// ------------------------------------------------------------
-
-match_expr ::=
-    "match"
-    expression
-    "{"
-        (
-            match_arm
-            ( "," match_arm )*
-            ","?
-        )?
-    "}"
-
-match_arm ::=
-    pattern
-    ( "if" expression )?
-    "=>"
-    (
-        block
-      | expression
-    )
-
-
-// ------------------------------------------------------------
-// PATTERNS
-// ------------------------------------------------------------
-
-pattern ::=
-      "_"
-    | literal
-    | IDENTIFIER
-    | variant_pattern
-
-variant_pattern ::=
-    "." IDENTIFIER
-    ( "(" pattern_list? ")" )?
-
-pattern_list ::=
-    pattern ( "," pattern )* ","?
-
-
-// ------------------------------------------------------------
-// EXPRESSIONS
-//
-// These productions describe the expression layers.
-// Binary precedence itself is implemented by the Pratt parser.
-// ------------------------------------------------------------
-
-expression ::=
-    recovery_expr
-
-
-// `or` deliberately sits outside the normal binary operators.
-// Boolean OR is `||`.
-
-recovery_expr ::=
-    pipe_expr
-    ( "or" fallback )?
-
-
-fallback ::=
-      return_fallback
-    | flow_fallback
-    | block
-    | pipe_expr
-
-return_fallback ::=
-    "return" expression?
-
-flow_fallback ::=
-      "break"
-    | "continue"
-
-
-// Pipelines bind more weakly than ordinary binary operators.
-//
-// x + 1 |> f
-//
-// means:
-//
-// f(x + 1)
-
-pipe_expr ::=
-    range_expr
-    ( "|>" pipe_target )*
-
-range_expr ::=
-    binary_expr
-    ( ".." binary_expr )?
-
-pipe_target ::=
-    postfix_expr
-
-
-// Conceptual grammar only.
-//
-// The implementation uses Pratt binding powers rather than recursively
-// applying this production.
-
-binary_expr ::=
-    unary_expr
-    ( binary_op unary_expr )*
-
-
-binary_op ::=
-      "||"
-    | "&&"
-    | "=="
-    | "!="
-    | "<"
-    | ">"
-    | "<="
-    | ">="
-    | "+"
-    | "-"
-    | "*"
-    | "/"
-    | "%"
-
-
-// ------------------------------------------------------------
-// UNARY EXPRESSIONS
-// ------------------------------------------------------------
-
-unary_expr ::=
-    unary_op* postfix_expr
-
-unary_op ::=
-      "!"
-    | "-"
-    | "try"
-
-
-// ------------------------------------------------------------
-// POSTFIX EXPRESSIONS
-//
-// This is what allows arbitrary chaining:
-//
-// foo().bar[0].baz(x)
-// ------------------------------------------------------------
-
-postfix_expr ::=
-    primary_expr postfix_part*
-
-postfix_part ::=
-      "." IDENTIFIER
-    | "(" args? ")"
-    | "[" expression "]"
-
-
-// ------------------------------------------------------------
-// PRIMARY EXPRESSIONS
-// ------------------------------------------------------------
-
-primary_expr ::=
-      IDENTIFIER
-    | literal
-    | "(" expression ")"
-    | enum_literal
-    | struct_literal
-    | if_expr
-    | match_expr
-
-
-// ------------------------------------------------------------
-// ENUM LITERALS
-// ------------------------------------------------------------
-
-enum_literal ::=
-    "." IDENTIFIER
-    ( "(" args? ")" )?
-
-
-// ------------------------------------------------------------
-// STRUCT LITERALS
-// ------------------------------------------------------------
-
-// Parser-context rule:
-//
-// Unparenthesized struct literals are not permitted directly in
-// condition position. This prevents:
-//
-//     if x == Point { ... }
-//
-// from becoming ambiguous with the following block.
-
-struct_literal ::=
-    path
-    "{"
-        struct_initializer_list?
-    "}"
-
-struct_initializer_list ::=
-    struct_initializer
-    ( "," struct_initializer )*
-    ","?
-
-struct_initializer ::=
-    IDENTIFIER ":" expression
-
-
-// ------------------------------------------------------------
-// ARGUMENTS
-// ------------------------------------------------------------
-
-args ::=
-    expression
-    ( "," expression )*
-    ","?
-
-
-// ------------------------------------------------------------
-// LITERALS
-// ------------------------------------------------------------
-
-literal ::=
-      NUMBER
-    | STRING
-    | CHAR
-    | "true"
-    | "false"
-```
-
----
+The complete ISO-style EBNF grammar is maintained in the canonical
+[GRAMMAR.md](GRAMMAR.md). This annotated document explains the grammar
+section by section, so the complete production listing is not duplicated here.
 
 # 34. Pratt binding powers
 
-The parser uses this table rather than trying to encode precedence through recursive EBNF:
+The parser uses this table rather than trying to encode precedence through
+recursive EBNF. These are the same binding powers specified in `GRAMMAR.md`:
 
-| Precedence | Operators              | Associativity |
-| ---------: | ---------------------- | ------------- |
-|          1 | `\|\|`                 | left          |
-|          2 | `&&`                   | left          |
-|          3 | `== !=`                | left          |
-|          4 | `< > <= >=`            | left          |
-|          5 | `+ -`                  | left          |
-|          6 | `* / %`                | left          |
-|      unary | `! - try`              | prefix        |
-|    postfix | `.x`, `(...)`, `[...]` | highest       |
+| Binding power | Operators | Fixity | Associativity |
+|-------------:|-----------|--------|---------------|
+| 10 | `||` | infix | left |
+| 20 | `&&` | infix | left |
+| 30 | `==`, `!=` | infix | left |
+| 40 | `<`, `>`, `<=`, `>=` | infix | left |
+| 50 | `+`, `-` | infix | left |
+| 60 | `*`, `/`, `%` | infix | left |
+| 70 | `!`, `-`, `try` | prefix | right-to-left nesting |
+| 80 | `.`, `(...)`, `[...]` | postfix | left-to-right chaining |
+
+For a Pratt implementation using separate left and right binding powers, a
+left-associative infix operator at precedence `p` uses `(left = p, right =
+p + 1)`. A right-associative infix operator would use `(left = p, right =
+p)`. There are currently no right-associative binary operators.
 
 Pipeline sits outside the normal binary Pratt table:
 
@@ -2484,17 +1977,10 @@ or                       weakest
 
 ---
 
-# 35. What happened to your original grammar?
+# 35. How the grammar evolved
 
-The useful way to think about the change is not:
-
-> “My small grammar was wrong.”
-
-It wasn't.
-
-It was a first model.
-
-The progression was:
+The earlier grammar was a valid initial model. Its evolution reflects the
+language features and implementation constraints added over time:
 
 ```text
 Original
@@ -2530,9 +2016,7 @@ Add explicit mutation/assignment
 Grammar matches actual programs
 ```
 
-That is precisely how language grammars tend to grow.
-
-You start by discovering the **nouns**:
+In Kō, the initial grammar identified the main syntactic categories:
 
 ```text
 function
@@ -2541,16 +2025,17 @@ statement
 expression
 ```
 
-Then actual programs force you to discover the **structure inside those nouns**.
+Examples and implementation constraints then exposed the structure required
+inside those categories.
 
 ---
 
-# 36. The five ideas I want you to understand before implementing this
+# 36. Implementation invariants and design principles
 
 ### 1. Grammar recursion models recursive syntax
 
 ```ebnf
-type ::= "?" type | path
+type = "?", type | path ;
 ```
 
 is why:
@@ -2573,7 +2058,7 @@ For:
 foo().bar[0]
 ```
 
-you don't need rules for:
+no separate rules are needed for:
 
 ```text
 function_call
@@ -2583,7 +2068,7 @@ function_index_method_call
 ...
 ```
 
-You start with:
+The parser starts with:
 
 ```text
 foo
@@ -2609,25 +2094,25 @@ Semantic analysis then says:
 
 > integer literal `5` is not assignable.
 
-Don't contort every grammar production trying to encode the entire type system.
+Grammar productions should not encode the entire type system.
 
 ---
 
 ### 4. Pratt parsing is part of the parser, not really the EBNF
 
-The EBNF tells you:
+The EBNF specifies:
 
 ```text
 these operators exist here
 ```
 
-The Pratt parser tells you:
+The Pratt parser specifies:
 
 ```text
 how strongly they bind
 ```
 
-That distinction will matter when you start writing `parseExpression(min_bp)`.
+That distinction is reflected in the `parseExpression(min_bp)` implementation.
 
 ---
 
@@ -2639,7 +2124,7 @@ For:
 foo.bar[0]
 ```
 
-your AST doesn't need nodes for:
+the AST does not need nodes for:
 
 ```text
 .
@@ -2661,7 +2146,7 @@ Index(
 
 The **source syntax disappears into structure**.
 
-That is ultimately what your parser is doing:
+That is ultimately what the parser is doing:
 
 ```text
 tokens
